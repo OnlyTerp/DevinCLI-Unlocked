@@ -1,30 +1,44 @@
 # DevinCLI Unlocked
 
-> A no-fluff field guide for turning Devin for Terminal into a local AI
-> engineering harness: persistent instructions, model routing, subagents, MCP
-> memory, Telegram, and cloud handoff.
+> A current, no-fluff field guide for using
+> [Devin for Terminal](https://cli.devin.ai/docs) as a real engineering harness:
+> rules, skills, subagents, MCP, hooks, shell integration, cloud handoff, and
+> model routing.
 
-DevinCLI is most powerful when you stop treating it like "a chatbot in a
-terminal" and start treating it like an **agent runtime**:
+DevinCLI is not just "chat in a terminal." The current version is closer to a
+local agent runtime with:
 
-- a small always-on operating spec,
+- persistent project rules,
 - reusable skills,
-- specialized subagents,
-- connected tools through MCP,
-- a memory layer,
-- and a clean path from local hacking to cloud execution.
+- foreground/background subagents,
+- model overrides,
+- MCP tools,
+- lifecycle hooks,
+- web search,
+- shell integration,
+- permission modes,
+- and a bridge to cloud Devin.
 
-This guide is built around that stack.
+This README is written for people who just found the tool and want the newest
+practical patterns without hype.
 
 ---
 
-## 0. Install and start
+## 0. Install, update, and start
+
+macOS / Linux / WSL:
 
 ```bash
 curl -fsSL https://cli.devin.ai/install.sh | bash
 ```
 
-Then open any repo:
+Windows PowerShell:
+
+```powershell
+irm https://static.devin.ai/cli/setup.ps1 | iex
+```
+
+Then open a repo:
 
 ```bash
 cd your-project
@@ -34,158 +48,229 @@ devin
 Useful launch patterns:
 
 ```bash
-devin --model opus -- "Plan the safest way to refactor auth"
-devin --model swe -- "Fix the failing lint errors"
-devin -p "List the risky files in this repo and why"
+devin -- "map this repo and suggest the safest first improvement"
+devin --model opus -- "plan a risky auth refactor before editing"
+devin --model swe -- "fix the failing lint errors"
+devin -p "summarize this repo's test strategy"
 devin --prompt-file prompt.md
+devin -c
+devin -r <session-id>
 ```
 
-Inside a session:
-
-```text
-/model opus
-/model swe
-/plan
-/accept-edits
-/context
-/compact
-```
+Run `/help` inside the CLI for the exact commands available in your build. The
+tool is moving fast.
 
 ---
 
-## 1. The first unlock: global instructions that behave like a harness
+## 1. The high-leverage mental model
 
-Most people underuse instructions. They paste a long prompt once, forget it,
-then wonder why the agent behaves differently tomorrow.
+The best DevinCLI setup has layers:
 
-Devin for Terminal automatically reads always-on rules from:
+- **Rules**: always-on project constraints in `AGENTS.md`, `AGENT.md`, or
+  `CLAUDE.md`.
+- **Skills**: reusable workflows and slash commands in
+  `.devin/skills/*/SKILL.md`.
+- **Subagents**: isolated workers for research or implementation, either
+  built-in or defined in `.devin/agents/*/AGENT.md`.
+- **MCP**: external tools such as GitHub, Linear, Figma, memory, databases, and
+  internal APIs.
+- **Hooks**: guardrails and automation around tool use in
+  `.devin/hooks.v1.json`.
+- **Permissions**: what Devin can do without asking through `permissions.allow`,
+  `permissions.deny`, and `permissions.ask`.
 
-- `AGENTS.md`
-- `AGENT.md`
-- `CLAUDE.md`
+Do not put everything in one giant prompt. Put stable rules in rules, repeatable
+procedures in skills, tool connections in MCP, and enforcement in hooks.
 
-It also imports rules from common agent tools:
+---
 
-- Cursor: `.cursorrules`, `.cursor/rules/*.md`
-- Windsurf: `.windsurf/rules/*.md`, `.windsurf/global_rules.md`
-- Claude Code: `.claude/`
+## 2. Rules: keep the "soul" small
 
-The best pattern is not a 2,000-line personality file. It is a small repo-level
-"soul" file that defines operating principles and points Devin toward skills
-when needed.
+Devin reads always-on rules from:
 
-Create `AGENTS.md` at the repo root:
+- `AGENTS.md` (recommended),
+- `AGENT.md`,
+- `CLAUDE.md`.
+
+It can also import rules/config from Cursor, Windsurf, Claude Code, OpenCode, VS
+Code, and Zed. That is convenient, but it means stale config from another tool
+can silently affect Devin. If behavior feels weird, inspect or disable imports
+with `read_config_from`.
+
+Good `AGENTS.md`:
 
 ```markdown
 # Agent Operating Contract
 
-## Mission
-
-Ship small, correct, reviewed changes. Prefer evidence over vibes.
-
 ## Defaults
 
-- Read the existing code before editing.
-- Prefer minimal diffs over rewrites.
-- Never invent APIs, commands, benchmarks, or pricing.
-- Cite files and commands when reporting.
+- Read existing code before editing.
+- Prefer small, reviewable diffs.
+- Do not invent APIs, commands, benchmarks, pricing, or file paths.
+- Cite exact files and commands when reporting.
 - Run the narrowest relevant check before declaring done.
 
 ## Delegation
 
-- Use read-only subagents for broad codebase research.
-- Use implementation subagents only for isolated, parallelizable work.
+- Use read-only subagents for broad repo research.
+- Use implementation subagents only for isolated work.
 - Use the review skill before opening a PR.
 
 ## Memory
 
-- Record durable facts only: repo setup, recurring commands, architecture
-  decisions, test accounts, and user preferences.
-- Do not store secrets in memory.
+- Save durable facts only: setup, recurring commands, architecture decisions,
+  test accounts, and user preferences.
+- Never store secrets.
 ```
 
-That is the harness. It changes the default behavior of every future session
-without bloating every prompt.
+Bad `AGENTS.md`:
 
-### Keep rules small; move workflows into skills
+- 2,000 lines of personality.
+- conflicting rules copied from five tools.
+- pricing or model claims that expire.
+- secrets, tokens, or private URLs.
 
-Rules are always injected into context. Too many rules dilute attention. For
-repeatable workflows, use skills instead:
+Rule of thumb: if the instruction is always true for the repo, put it in rules.
+If it is a procedure, make it a skill.
+
+---
+
+## 3. Skills: the underrated power feature
+
+Skills are reusable prompts that can be invoked as slash commands, used by the
+agent autonomously, run with their own model, restrict tools, and even run as
+subagents.
+
+Project skill:
 
 ```text
-.devin/skills/
-└── review-pr/
-    └── SKILL.md
+.devin/skills/review-pr/
+└── SKILL.md
 ```
 
-Example skill:
+Example:
 
 ```markdown
 ---
 name: review-pr
-description: Review staged changes for correctness, security, and style
+description: Review the current diff for correctness, security, and tests
+argument-hint: "[optional focus area]"
 model: opus
 allowed-tools:
   - read
   - grep
   - glob
   - exec
+permissions:
+  allow:
+    - Exec(git diff)
+    - Exec(git status)
 ---
 
 Review the current diff.
 
-Return:
+Focus on:
 
-1. Blockers
-2. Risky assumptions
-3. Missing tests
-4. Files that need another pass
+1. logic bugs
+2. security issues
+3. missing tests
+4. accidental large rewrites
+5. risky assumptions
 
-Only cite concrete evidence.
+Return only concrete findings with file paths and commands.
 ```
 
-Use rules for identity and constraints. Use skills for procedures.
+Use it inside Devin:
+
+```text
+/review-pr
+```
+
+### Run a skill as a subagent
+
+For focused research that should not pollute the main context:
+
+```markdown
+---
+name: deep-research
+description: Research a code path and report evidence
+subagent: true
+model: sonnet
+allowed-tools:
+  - read
+  - grep
+  - glob
+---
+
+Research this topic: $ARGUMENTS
+
+Return exact files, line numbers, and unanswered questions.
+```
+
+This is one of the cleanest ways to get specialized workers without bloating the
+root conversation.
 
 ---
 
-## 2. The second unlock: orchestration beats one giant prompt
+## 4. Subagents: orchestration beats one giant context
 
-Subagents let the main agent spawn independent workers. Each subagent gets
-codebase context and tools, but it runs in its own conversation chain instead of
-sharing the parent conversation history.
+Subagents share tools and codebase context, but they run in their own
+conversation chain. They do **not** inherit the parent conversation history.
+That makes them useful for breadth:
 
-This matters because the root agent can act like an orchestrator:
-
-```text
-Use Opus as the lead architect.
-Spawn 6 read-only subagents:
-1. Auth flow researcher
-2. Database schema researcher
-3. API route researcher
-4. Frontend state researcher
-5. Test coverage researcher
-6. Security risk researcher
-
-Have each subagent return file paths, line numbers, and a short risk summary.
-Then synthesize one implementation plan.
-```
+- map a large repo,
+- inspect separate packages,
+- run isolated tests,
+- review a diff independently,
+- investigate competing solutions.
 
 Built-in profiles:
 
-- `subagent_explore`: read-only research, architecture mapping, trace gathering.
-- `subagent_general`: implementation work, checks, mechanical changes.
+| Profile            | Best use                                         |
+| ------------------ | ------------------------------------------------ |
+| `subagent_explore` | read-only codebase research                      |
+| `subagent_general` | implementation or checks when tools are approved |
 
-Background subagents can run while the parent keeps working. Foreground
-subagents pause the parent and let you approve tools interactively.
+Subagents can run:
+
+- **foreground**: parent waits; you approve tools interactively.
+- **background**: parent keeps working; unapproved tools are denied.
+
+If a background subagent fails because a tool was denied, resume it in the
+foreground and approve the needed tool.
+
+Good swarm prompt:
+
+```text
+Use the root agent only for orchestration.
+
+Spawn one read-only subagent per top-level package.
+Each subagent must report:
+- purpose of the package
+- key files
+- risky code paths
+- relevant tests
+- unanswered questions
+
+Do not let subagents edit files.
+After all return, synthesize one prioritized implementation plan.
+```
+
+Bad swarm prompt:
+
+```text
+Spawn 10 agents to make the app better.
+```
+
+The trick is not "more agents." The trick is bounded, non-overlapping jobs.
 
 ### Custom subagents
 
-You can define specialized workers:
+Custom subagents are experimental, but useful:
 
 ```text
-.devin/agents/
-└── fast-researcher/
-    └── AGENT.md
+.devin/agents/fast-researcher/
+└── AGENT.md
 ```
 
 ```markdown
@@ -197,304 +282,47 @@ allowed-tools:
   - read
   - grep
   - glob
+permissions:
+  deny:
+    - edit
+    - exec
 ---
 
 You are a read-only research subagent. Find relevant files, trace the flow, and
-report concise findings with file paths. Do not edit files.
+report concise findings. Never edit files.
 ```
 
-Now the root model can route cheap, fast, isolated research to `swe` while
-keeping a smarter model for planning and synthesis.
-
-### The 10-worker pattern
-
-If a fast model streams around ~950 tokens/sec, ten independent workers can
-produce roughly 9,500 tokens/sec of aggregate output in ideal conditions. That
-is not "one smarter brain"; it is a swarm. The trick is to give each worker a
-bounded, non-overlapping job.
-
-Good swarm prompt:
+Now you can ask:
 
 ```text
-Use the root agent only for orchestration.
-Spawn 10 SWE subagents in parallel.
-Each subagent gets exactly one directory.
-Each must report:
-- key files
-- risky code paths
-- tests to run
-- unanswered questions
-
-Do not let subagents edit files.
-After all return, produce one prioritized plan.
-```
-
-Bad swarm prompt:
-
-```text
-Spawn 10 agents to make the app better.
-```
-
-That creates overlap, merge conflicts, and noise.
-
-### When not to use subagents
-
-Do not spawn workers for:
-
-- one-file edits,
-- tiny questions,
-- tasks that require a single coherent design pass,
-- anything where the cost of merging answers is higher than the research itself.
-
-Use orchestration when breadth matters.
-
----
-
-## 3. Why Rust matters for an agentic CLI
-
-Cognition describes Devin for Terminal as written in Rust and highlights a
-custom Rust terminal rendering library. That is not just a marketing detail.
-
-For an agentic CLI, Rust is a good fit because the interface is not passive
-text. It is a live control surface for:
-
-- streaming model output,
-- rendering diffs,
-- handling keyboard input,
-- managing subprocesses,
-- coordinating tool calls,
-- updating progress panels,
-- and staying responsive while the agent works.
-
-Rust helps here because:
-
-- Low latency keeps the terminal UI snappy while output streams.
-- Memory safety reduces runtime crash risk in long sessions.
-- Strong concurrency primitives help with tools, subprocesses, and streaming.
-- Single-binary ergonomics make distribution easier across machines.
-- Predictable performance matters when the CLI is open all day.
-
-The real point: DevinCLI is not just a prompt wrapper. It is a local runtime for
-supervising autonomous work.
-
----
-
-## 4. Local first, cloud when the task outgrows your laptop
-
-Devin for Terminal is built around a simple workflow:
-
-1. Start locally where your repo, shell, and editor already are.
-2. Explore, plan, and make early edits.
-3. Hand the work to Devin in the cloud when it needs an isolated machine,
-   browser testing, recordings, PR work, or long-running follow-through.
-
-Cloud handoff is useful when you want to:
-
-- close your laptop but keep the task moving,
-- run multiple agents against the same codebase without managing worktrees,
-- let the cloud agent test in its own browser,
-- have Devin open a PR and respond to review comments,
-- avoid risky commands touching your local machine.
-
-If your build exposes a handoff slash command, use `/help` to confirm the exact
-spelling. Public docs describe the handoff flow, but command names can move
-faster than static docs.
-
----
-
-## 5. Telegram: turn DevinCLI into a reachable operator
-
-Telegram becomes powerful when connected through MCP. You can give Devin a
-controlled tool surface for sending updates, reading a channel, or interacting
-with a bot.
-
-There are two common approaches:
-
-### Option A: Bot API MCP
-
-Best for notifications and simple command workflows.
-
-Example local config:
-
-```json
-// .devin/config.local.json
-{
-  "mcpServers": {
-    "telegram": {
-      "command": "npx",
-      "args": ["-y", "telegram-bot-mcp-server"],
-      "env": {
-        "TELEGRAM_BOT_TOKEN": "put-this-in-local-config-or-env"
-      }
-    }
-  }
-}
-```
-
-Use BotFather to create the bot token. Keep it out of git.
-
-### Option B: MTProto Telegram MCP
-
-Best when you want account-level access to chats, channels, and message history.
-This is more powerful and more sensitive. Use it only if you understand the
-security tradeoff.
-
-Possible use cases:
-
-- "Summarize the last 50 messages in my project channel."
-- "Send me a Telegram update when tests finish."
-- "Watch a release channel and extract breaking changes."
-- "Forward the PR link to my team chat."
-
-The pattern is simple:
-
-1. Add a Telegram MCP server.
-2. Store credentials in local config or environment variables.
-3. Add permissions so Devin can call only the Telegram tools you want.
-4. Give explicit prompts for when to message you.
-
-Example instruction:
-
-```markdown
-When a long-running task finishes, send a Telegram summary with:
-
-- branch name
-- PR link
-- test result
-- one blocker if any
-
-Never send secrets, logs with tokens, or private customer data.
+Use the fast-researcher subagent to map the auth flow.
 ```
 
 ---
 
-## 6. Lightweight MCP memory that actually works
+## 5. Modes and permissions: speed without losing control
 
-Memory should not be mystical. The best memory is boring:
+DevinCLI is much better when safe actions are pre-approved and dangerous actions
+are blocked.
 
-- small,
-- explicit,
-- inspectable,
-- easy to delete,
-- and shared across sessions/models through MCP.
+Important modes:
 
-The official `@modelcontextprotocol/server-memory` package gives you a simple
-knowledge-graph memory server with entities, relations, and observations.
+- **Normal**: approval for writes and shell commands.
+- **Accept Edits**: workspace file edits are okay, shell commands still prompt.
+- **Plan**: read-only planning before implementation.
+- **Ask**: answer a question without code changes.
+- **Bypass**: broad local machine access.
+- **Autonomous / sandbox**: unattended execution with OS-level limits.
 
-Example:
-
-```json
-// ~/.config/devin/config.json
-{
-  "mcpServers": {
-    "memory": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"]
-    }
-  }
-}
-```
-
-If you prefer file-backed memory, use a markdown/JSON-backed MCP server and keep
-the memory folder in a private repo.
-
-### What to store
-
-Store durable facts:
-
-- "This repo uses pnpm."
-- "Run `cargo nextest` for Rust tests."
-- "The staging API requires VPN."
-- "Rob prefers terse PR descriptions."
-- "Do not touch generated files in `sdk/gen/`."
-
-Do not store:
-
-- secrets,
-- one-off chat noise,
-- raw logs,
-- speculative guesses,
-- credentials,
-- private customer data.
-
-### Memory prompt
+Slash commands:
 
 ```text
-Before starting, query memory for this repo and this user.
-At the end, write back only durable facts that will help future sessions.
-Do not save secrets or temporary debugging notes.
-```
-
-This is how memory becomes useful instead of becoming another pile of context
-sludge.
-
----
-
-## 7. Model routing: use smart models as leads, fast models as workers
-
-Devin for Terminal supports model switching through:
-
-```bash
-devin --model opus -- "do the hard planning"
-```
-
-```text
-/model swe
-/model codex
-/model sonnet
-```
-
-Skills and custom subagents can also specify a model:
-
-```yaml
-model: swe
-```
-
-The practical strategy:
-
-- Architecture, high-risk refactors, final synthesis: smartest available model.
-- Broad read-only repo research: fast/cheap model.
-- Lint fixes and mechanical edits: fast coding model.
-- PR review and security pass: smarter model.
-- Summarization and status updates: cheap model.
-
-If GPT-5.5 or free promo models are discounted in your account, exploit them for
-the right tier of work. Promos change, so check the current model picker/pricing
-before publishing exact claims.
-
-High-leverage prompt:
-
-```text
-Use the current smart model as the lead.
-Delegate broad research to fast subagents.
-Use cheap models for mechanical checks.
-Before editing, produce a short plan with which model does which job.
-```
-
----
-
-## 8. A complete DevinCLI power setup
-
-Recommended repo layout:
-
-```text
-your-project/
-├── AGENTS.md
-├── .devin/
-│   ├── config.json
-│   ├── skills/
-│   │   ├── review-pr/
-│   │   │   └── SKILL.md
-│   │   ├── run-tests/
-│   │   │   └── SKILL.md
-│   │   └── research-architecture/
-│   │       └── SKILL.md
-│   └── agents/
-│       ├── fast-researcher/
-│       │   └── AGENT.md
-│       └── test-runner/
-│           └── AGENT.md
-└── .devin/config.local.json   # local only; secrets and personal MCP config
+/normal
+/accept-edits
+/plan
+/ask explain the routing layer
+/bypass
+/mode
 ```
 
 Project config example:
@@ -507,49 +335,420 @@ Project config example:
       "Read(**)",
       "Exec(git status)",
       "Exec(git diff)",
+      "Exec(git log)",
       "Exec(npm run)",
       "Exec(pnpm run)",
-      "Exec(cargo test)",
-      "Exec(cargo nextest)"
+      "Exec(cargo test)"
     ],
-    "deny": ["Exec(rm -rf)", "Exec(sudo)"]
-  },
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"]
-    }
+    "deny": ["Exec(rm)", "Exec(sudo)", "Write(.env*)", "Write(**/*secret*)"],
+    "ask": ["mcp__github__create_issue", "mcp__linear__*"]
   }
 }
 ```
 
-Local config example:
+Bypass is fast, but unrestricted. Prefer `--sandbox` when you want unattended
+work with filesystem/network boundaries.
+
+---
+
+## 6. Shell integration: summon Devin from your real shell
+
+Shell integration is now one of the best everyday upgrades. It wraps your shell
+so Devin can see recent commands/output and be invoked instantly.
+
+Setup:
+
+```bash
+devin shell setup
+```
+
+Then restart or source your shell config.
+
+What it unlocks:
+
+- press `Ctrl+G` in your shell to invoke Devin with the current command line and
+  recent shell context,
+- in zsh, type `# explain this error` and press Enter to send that comment to
+  Devin,
+- ask for help after a failed command without manually pasting the whole log.
+
+Notes:
+
+- Works on macOS, Linux, and WSL with Bash, Zsh, and Fish.
+- Zsh has the best support.
+- PowerShell/CMD shell integration is not supported yet.
+- This is separate from `devin setup`; run `devin shell setup` explicitly.
+
+---
+
+## 7. MCP: tools are where the leverage is
+
+MCP gives Devin external tools: GitHub, Linear, Notion, Figma, databases,
+internal APIs, memory, and custom scripts.
+
+Add a remote MCP server:
+
+```bash
+devin mcp add linear --url https://mcp.linear.app/mcp
+devin mcp login linear
+```
+
+Add Figma:
+
+```bash
+devin mcp add figma --url https://mcp.figma.com/v1
+```
+
+Add GitHub Copilot MCP with device flow:
+
+```bash
+devin mcp add github --url https://api.githubcopilot.com/mcp/
+```
+
+Manage servers:
+
+```bash
+devin mcp list
+devin mcp get <name>
+devin mcp login <name>
+devin mcp logout <name>
+devin mcp remove <name>
+```
+
+Scope matters:
+
+```bash
+devin mcp add -s project <name> <url> # shared in .devin/config.json
+devin mcp add -s user <name> <url>    # global user config
+```
+
+By default, new servers are saved to local scope (`.devin/config.local.json`) so
+secrets do not land in git.
+
+### MCP gotchas
+
+- OAuth is per client. If you authenticated in Claude Code or Windsurf, still
+  run `devin mcp login <server>` for DevinCLI.
+- CLI docs currently say remote MCP servers should use Streamable HTTP, not
+  legacy SSE.
+- Keep secrets in `.devin/config.local.json`, not committed project config.
+- Use `permissions.ask/allow/deny` for sensitive MCP tools.
+- Disable noisy imported MCP config with `read_config_from` if another editor is
+  polluting your tool list.
+
+---
+
+## 8. Lightweight memory that is actually useful
+
+Memory should be boring:
+
+- explicit,
+- inspectable,
+- easy to delete,
+- shared across sessions,
+- never a dumping ground for logs.
+
+The simple option is the official memory MCP server:
 
 ```json
-// .devin/config.local.json
+// ~/.config/devin/config.json or .devin/config.local.json
 {
   "mcpServers": {
-    "telegram": {
+    "memory": {
       "command": "npx",
-      "args": ["-y", "telegram-bot-mcp-server"],
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
       "env": {
-        "TELEGRAM_BOT_TOKEN": "your-local-token"
+        "MEMORY_FILE_PATH": "/absolute/path/to/devin-memory.jsonl"
       }
     }
   }
 }
 ```
 
-Never commit `.devin/config.local.json` if it contains secrets.
+Store:
+
+- repo setup commands,
+- recurring test/lint commands,
+- architecture decisions,
+- API conventions,
+- user preferences,
+- known flaky tests.
+
+Do not store:
+
+- secrets,
+- temporary bugs,
+- guesses,
+- raw logs,
+- private customer data,
+- anything you would not want another model/session to read.
+
+Good memory prompt:
+
+```text
+Before planning, query memory for stable facts about this repo.
+At the end, save only durable facts that will help future sessions.
+Do not save secrets, logs, guesses, or one-off errors.
+```
 
 ---
 
-## 9. Copy/paste prompts
+## 9. Hooks: turn preferences into enforcement
+
+Hooks let you run commands or prompts at lifecycle events. They are compatible
+with Claude Code hook format, so existing Claude hooks can often carry over.
+
+Recommended standalone file:
+
+```text
+.devin/hooks.v1.json
+```
+
+Useful events:
+
+| Event               | Use it for                               |
+| ------------------- | ---------------------------------------- |
+| `PreToolUse`        | block dangerous commands before they run |
+| `PostToolUse`       | log commands or validate outputs         |
+| `PermissionRequest` | auto-approve safe commands               |
+| `UserPromptSubmit`  | inject context for certain requests      |
+| `Stop`              | prevent stopping before required checks  |
+| `PostCompaction`    | log/reinject context after compaction    |
+| `SessionStart`      | run setup/context scripts                |
+| `SessionEnd`        | cleanup or final logging                 |
+
+Example: block destructive shell commands.
+
+```json
+{
+  "PreToolUse": [
+    {
+      "matcher": "exec",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 scripts/block-dangerous-command.py"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Hooks receive JSON on stdin and can return JSON like:
+
+```json
+{
+  "decision": "block",
+  "reason": "Destructive command blocked by project policy"
+}
+```
+
+Use `/hooks` to verify what loaded.
+
+Do not create hook loops. A `Stop` hook that always blocks will trap the agent
+forever.
+
+---
+
+## 10. Cloud handoff: local when interactive, cloud when durable
+
+Use local DevinCLI for fast iteration where your repo and shell already live.
+Move to cloud Devin when the task needs a separate machine, long-running work,
+browser testing, recordings, PR follow-through, or you want to close your
+laptop.
+
+Current handoff paths include:
+
+- `/handoff` when available in your build,
+- typing `&` on an empty prompt to enter handoff mode,
+- handing off a plan when exiting plan mode,
+- `devin cloud drs` commands for environment blueprints, sandbox sessions, and
+  builds.
+
+Handoff-ready prompt:
+
+```text
+Prepare this for cloud handoff:
+- current goal
+- branch and changed files
+- exact commands already run
+- remaining checks
+- known blockers
+- success criteria
+- anything the cloud agent must not do
+```
+
+Local is best for tight feedback. Cloud is best for persistence.
+
+---
+
+## 11. Model routing: stop using one model for everything
+
+DevinCLI supports frequent model releases from Anthropic, OpenAI, Google,
+Cognition, and open-source providers. Short names like `opus`, `sonnet`, `swe`,
+`codex`, and `gemini` resolve to the latest model in that family.
+
+Switch models:
+
+```bash
+devin --model opus -- "plan this migration"
+```
+
+```text
+/model
+/model swe
+/model opus
+```
+
+Some models support thinking levels. Cycle them with `Alt+T` (`Opt+T` on macOS).
+
+Practical routing:
+
+- architecture, risky refactors, final synthesis: strongest model.
+- broad read-only repo research: fast/cheap model or explore subagents.
+- lint fixes and mechanical edits: `swe` / fast coding model.
+- security review: stronger model.
+- summarization and status updates: cheaper model.
+
+Do not hard-code viral pricing claims in a public README. Promos change. Check
+the current model picker and billing UI before publishing exact discount/free
+model claims.
+
+---
+
+## 12. New commands and tiny quality-of-life wins
+
+Recent high-signal features worth actually using:
+
+```text
+/btw <question>
+```
+
+Ask a side question using current context without adding it to the main
+conversation.
+
+```text
+/loop <prompt>
+```
+
+Run a prompt and auto-review the diff in a loop. Start from a clean git state.
+
+```text
+/copy
+```
+
+Copy the last agent response to the clipboard.
+
+```text
+/steps
+/revert
+/fork
+```
+
+Inspect steps, rewind changes, or fork a session.
+
+```text
+/usage
+/context
+/compact
+```
+
+Watch quota/context and force compaction when needed.
+
+```text
+/org
+```
+
+Switch Devin organizations from the terminal.
+
+`Ctrl+R` opens fuzzy search over previous prompts. Number keys can select
+numbered options in prompts. These are small, but they make the CLI feel much
+faster.
+
+The agent can also use `web_search` during sessions, which is a major upgrade
+for debugging fresh libraries, API changes, and release notes.
+
+---
+
+## 13. A complete power-user repo layout
+
+```text
+your-project/
+├── AGENTS.md
+├── .devin/
+│   ├── config.json
+│   ├── config.local.json      # gitignored; secrets and personal MCP
+│   ├── hooks.v1.json
+│   ├── skills/
+│   │   ├── review-pr/
+│   │   │   └── SKILL.md
+│   │   ├── deep-research/
+│   │   │   └── SKILL.md
+│   │   └── run-checks/
+│   │       └── SKILL.md
+│   └── agents/
+│       ├── fast-researcher/
+│       │   └── AGENT.md
+│       └── reviewer/
+│           └── AGENT.md
+└── scripts/
+    └── block-dangerous-command.py
+```
+
+Minimal shared config:
+
+```json
+// .devin/config.json
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Exec(git status)",
+      "Exec(git diff)",
+      "Exec(npm run)",
+      "Exec(pnpm run)"
+    ],
+    "deny": ["Exec(sudo)", "Exec(rm)", "Write(.env*)"]
+  },
+  "read_config_from": {
+    "cursor": true,
+    "windsurf": true,
+    "claude": true,
+    "opencode": true,
+    "vscode": true,
+    "zed": true
+  }
+}
+```
+
+Personal local config:
+
+```json
+// .devin/config.local.json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "env": {
+        "MEMORY_FILE_PATH": "/absolute/path/to/devin-memory.jsonl"
+      }
+    }
+  }
+}
+```
+
+Never commit local config if it contains secrets.
+
+---
+
+## 14. Copy/paste prompts that work
 
 ### Repo map
 
 ```text
-Use subagents for read-only research.
+Use read-only subagents for research.
 Map this repo into:
 1. main entrypoints
 2. core domain modules
@@ -557,7 +756,7 @@ Map this repo into:
 4. risky files
 5. commands required before PR
 
-Return file paths and line numbers.
+Return exact file paths and line numbers.
 ```
 
 ### Parallel investigation
@@ -572,15 +771,16 @@ Each subagent should identify:
 - likely risks
 
 Synthesize into a dependency map and implementation plan.
+Do not edit files yet.
 ```
 
 ### Smart lead, fast workers
 
 ```text
 Act as the lead architect.
-Use fast subagents for code search and evidence gathering.
-Do not let subagents edit.
-After they report, decide the minimal safe diff.
+Use fast read-only subagents for code search and evidence gathering.
+Keep implementation decisions in the root conversation.
+After subagents report, decide the minimal safe diff.
 ```
 
 ### Handoff-ready task
@@ -603,42 +803,39 @@ At the end, save only stable facts that help future sessions.
 Do not save secrets, temporary errors, logs, or guesses.
 ```
 
-### Telegram updates
+### Review before PR
 
 ```text
-If this task takes more than 10 minutes, send a Telegram update when:
-1. the plan is complete
-2. tests finish
-3. the PR is opened
-4. a blocker appears
-
-Keep each update under 500 characters.
+Before opening a PR:
+1. inspect the full diff
+2. run the narrowest relevant checks
+3. identify risky assumptions
+4. remove accidental files
+5. write a concise PR summary with test evidence
 ```
 
 ---
 
-## 10. The anti-slop checklist
-
-Before publishing or sharing a DevinCLI guide, remove claims that are not
-verified.
+## 15. Anti-slop checklist
 
 Keep:
 
 - exact commands,
-- file paths,
-- configuration examples,
-- workflows that readers can copy,
+- exact config paths,
+- workflows readers can copy,
+- warnings about permissions and secrets,
 - links to official docs,
-- warnings about secrets and permissions.
+- claims that survive changelogs.
 
 Cut:
 
-- vague "10x productivity" claims,
-- fake benchmark numbers,
-- unsupported pricing claims,
-- huge instruction files,
-- prompts that ask agents to "make it better",
-- examples that commit secrets.
+- fake token-per-second math,
+- unsupported pricing/promo claims,
+- model names that do not exist in docs,
+- "10x" language,
+- giant personality prompts,
+- MCP configs that commit secrets,
+- examples that ask agents to "make it better."
 
 The viral version is not the loudest version. It is the guide people can copy in
 10 minutes and feel the power immediately.
@@ -648,15 +845,20 @@ The viral version is not the loudest version. It is the guide people can copy in
 ## Sources
 
 - [Devin for Terminal quickstart](https://cli.devin.ai/docs)
+- [Stable changelog](https://cli.devin.ai/docs/changelog/stable)
 - [Commands and slash commands](https://cli.devin.ai/docs/reference/commands)
+- [Keyboard shortcuts](https://cli.devin.ai/docs/reference/keyboard-shortcuts)
+- [Shell integration](https://cli.devin.ai/docs/shell-integration)
+- [Configuration](https://cli.devin.ai/docs/extensibility/configuration)
+- [Configuration import](https://cli.devin.ai/docs/reference/configuration/read-config-from)
+- [Permissions](https://cli.devin.ai/docs/reference/permissions)
 - [Rules and `AGENTS.md`](https://cli.devin.ai/docs/extensibility/rules)
-- [Skills](https://cli.devin.ai/docs/extensibility/skills/overview)
+- [Skills overview](https://cli.devin.ai/docs/extensibility/skills/overview)
 - [Creating skills](https://cli.devin.ai/docs/extensibility/skills/creating-skills)
 - [Subagents and custom subagents](https://cli.devin.ai/docs/subagents)
 - [MCP overview](https://cli.devin.ai/docs/extensibility/mcp/overview)
 - [MCP configuration](https://cli.devin.ai/docs/extensibility/mcp/configuration)
+- [Hooks](https://cli.devin.ai/docs/extensibility/hooks/overview)
+- [Lifecycle hooks](https://cli.devin.ai/docs/extensibility/hooks/lifecycle-hooks)
 - [Models](https://cli.devin.ai/docs/models)
-- [Devin for Terminal launch page](https://devin.ai/terminal)
-- [Cognition launch post](https://cognition.ai/blog/devin-for-terminal)
 - [MCP memory server](https://www.npmjs.com/package/@modelcontextprotocol/server-memory)
-- [Telegram Bot MCP example](https://www.npmjs.com/package/telegram-bot-mcp-server)
