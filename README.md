@@ -55,10 +55,13 @@ devin -p "summarize this repo's test strategy"
 devin --prompt-file prompt.md
 devin -c
 devin -r <session-id>
+devin auth status
+devin setup --force-manual-token-flow # useful over SSH / remote terminals
 ```
 
-Run `/help` inside the CLI for the exact commands available in your build. The
-tool is moving fast.
+Run `/help` inside the CLI for the exact commands available in your build, and
+`man devin` when you want the command reference in-terminal. The tool is moving
+fast.
 
 ---
 
@@ -85,6 +88,9 @@ procedures in skills, tool connections in MCP, and enforcement in hooks.
 ---
 
 ## 2. Rules: keep the "soul" small
+
+The official guidance has moved in an important direction: keep always-on rules
+short, and put detailed workflows into skills so they load only when relevant.
 
 Devin reads always-on rules from:
 
@@ -132,6 +138,14 @@ Bad `AGENTS.md`:
 
 Rule of thumb: if the instruction is always true for the repo, put it in rules.
 If it is a procedure, make it a skill.
+
+Useful CLI checks:
+
+```bash
+devin rules list
+devin rules show <name>
+devin rules paths
+```
 
 ---
 
@@ -185,6 +199,18 @@ Use it inside Devin:
 ```text
 /review-pr
 ```
+
+Useful CLI checks:
+
+```bash
+devin skills list
+devin skills list --trigger model
+devin skills show review-pr
+devin skills paths
+```
+
+`skill search` can recursively find model-invocable skills under a project path,
+which matters once your `.devin/skills/` directory gets large.
 
 ### Run a skill as a subagent
 
@@ -308,7 +334,8 @@ are blocked.
 Important modes:
 
 - **Normal**: approval for writes and shell commands.
-- **Accept Edits**: workspace file edits are okay, shell commands still prompt.
+- **Accept Edits / Code**: workspace file edits are okay; shell commands still
+  prompt. Newer builds may display this as Code mode when org policy allows it.
 - **Plan**: read-only planning before implementation.
 - **Ask**: answer a question without code changes.
 - **Bypass**: broad local machine access.
@@ -324,6 +351,9 @@ Slash commands:
 /bypass
 /mode
 ```
+
+Keyboard shortcut: `Shift+Tab` cycles modes. In sandbox sessions, Autonomous is
+selected automatically and the sandbox, not trust, is the safety boundary.
 
 Project config example:
 
@@ -347,7 +377,8 @@ Project config example:
 ```
 
 Bypass is fast, but unrestricted. Prefer `--sandbox` when you want unattended
-work with filesystem/network boundaries.
+work with filesystem/network boundaries. Admin/team permissions still win over
+local mode choices.
 
 ---
 
@@ -413,6 +444,8 @@ devin mcp get <name>
 devin mcp login <name>
 devin mcp logout <name>
 devin mcp remove <name>
+devin mcp enable <name>
+devin mcp disable <name>
 ```
 
 Scope matters:
@@ -429,8 +462,10 @@ secrets do not land in git.
 
 - OAuth is per client. If you authenticated in Claude Code or Windsurf, still
   run `devin mcp login <server>` for DevinCLI.
-- CLI docs currently say remote MCP servers should use Streamable HTTP, not
-  legacy SSE.
+- Remote MCP defaults to Streamable HTTP and can fall back to legacy SSE on
+  compatible 4xx responses; set `transport` explicitly when a server needs it.
+- Use `disabledTools` when one MCP server is useful but one tool is too risky or
+  noisy.
 - Keep secrets in `.devin/config.local.json`, not committed project config.
 - Use `permissions.ask/allow/deny` for sensitive MCP tools.
 - Disable noisy imported MCP config with `read_config_from` if another editor is
@@ -458,7 +493,7 @@ The simple option is the official memory MCP server:
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-memory"],
       "env": {
-        "MEMORY_FILE_PATH": "/absolute/path/to/devin-memory.jsonl"
+        "MEMORY_FILE_PATH": "/absolute/path/to/devin-memory.json"
       }
     }
   }
@@ -566,6 +601,9 @@ Current handoff paths include:
 - `devin cloud drs` commands for environment blueprints, sandbox sessions, and
   builds.
 
+If `/handoff` has no task description, cloud Devin continues from the current
+context automatically. With a description, write the exact next goal.
+
 Handoff-ready prompt:
 
 ```text
@@ -607,9 +645,13 @@ Practical routing:
 
 - architecture, risky refactors, final synthesis: strongest model.
 - broad read-only repo research: fast/cheap model or explore subagents.
-- lint fixes and mechanical edits: `swe` / fast coding model.
+- everyday coding and mechanical fixes: `swe`, now the documented default fast
+  coding family in current stable docs.
 - security review: stronger model.
 - summarization and status updates: cheaper model.
+
+Try at least `swe`, `gpt`, and `opus` on your own workflow instead of copying
+someone else's favorite model. Model quality varies by task and prompting style.
 
 Do not hard-code viral pricing claims in a public README. Promos change. Check
 the current model picker and billing UI before publishing exact discount/free
@@ -652,9 +694,10 @@ Inspect steps, rewind changes, or fork a session.
 /usage
 /context
 /compact
+/login-status
 ```
 
-Watch quota/context and force compaction when needed.
+Watch quota/context, force compaction when needed, and debug auth/team state.
 
 ```text
 /org
@@ -662,12 +705,14 @@ Watch quota/context and force compaction when needed.
 
 Switch Devin organizations from the terminal.
 
-`Ctrl+R` opens fuzzy search over previous prompts. Number keys can select
-numbered options in prompts. These are small, but they make the CLI feel much
-faster.
+`Ctrl+R` opens fuzzy search over previous prompts. `Ctrl+V` can paste images
+into the input. `@` opens file/directory autocomplete for adding local context.
+Number keys can select numbered options in prompts. These are small, but they
+make the CLI feel much faster.
 
 The agent can also use `web_search` during sessions, which is a major upgrade
-for debugging fresh libraries, API changes, and release notes.
+for debugging fresh libraries, API changes, and release notes. Enterprise teams
+can disable web search in team settings, so check policy if it is missing.
 
 ---
 
@@ -732,7 +777,7 @@ Personal local config:
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-memory"],
       "env": {
-        "MEMORY_FILE_PATH": "/absolute/path/to/devin-memory.jsonl"
+        "MEMORY_FILE_PATH": "/absolute/path/to/devin-memory.json"
       }
     }
   }
@@ -803,6 +848,19 @@ At the end, save only stable facts that help future sessions.
 Do not save secrets, temporary errors, logs, or guesses.
 ```
 
+### Fresh-docs audit
+
+```text
+Research the current official docs/changelog first.
+Then audit this README for:
+1. stale command names
+2. outdated transport/auth claims
+3. pricing or model claims that may have expired
+4. missing high-leverage features
+
+Only edit claims you can tie back to current sources.
+```
+
 ### Review before PR
 
 ```text
@@ -846,10 +904,13 @@ The viral version is not the loudest version. It is the guide people can copy in
 
 - [Devin for Terminal quickstart](https://cli.devin.ai/docs)
 - [Stable changelog](https://cli.devin.ai/docs/changelog/stable)
+- [Essential commands](https://cli.devin.ai/docs/essential-commands)
 - [Commands and slash commands](https://cli.devin.ai/docs/reference/commands)
 - [Keyboard shortcuts](https://cli.devin.ai/docs/reference/keyboard-shortcuts)
 - [Shell integration](https://cli.devin.ai/docs/shell-integration)
 - [Configuration](https://cli.devin.ai/docs/extensibility/configuration)
+- [Configuration file](https://cli.devin.ai/docs/reference/configuration/config-file)
+- [Configuration precedence](https://cli.devin.ai/docs/reference/configuration/global-vs-local)
 - [Configuration import](https://cli.devin.ai/docs/reference/configuration/read-config-from)
 - [Permissions](https://cli.devin.ai/docs/reference/permissions)
 - [Rules and `AGENTS.md`](https://cli.devin.ai/docs/extensibility/rules)
