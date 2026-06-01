@@ -2,8 +2,10 @@
 
 > A current, no-fluff field guide for using
 > [Devin for Terminal](https://cli.devin.ai/docs) as a real engineering harness:
-> rules, skills, subagents, MCP, hooks, shell integration, cloud handoff, and
-> model routing.
+> rules, skills, subagents, MCP, hooks, shell integration, cloud handoff,
+> model routing — **and the advanced "unlock" layer**: bringing your own models
+> into the picker, running fleets of subagents, and keeping a heavy local setup
+> stable.
 
 DevinCLI is not just "chat in a terminal." The current version is closer to a
 local agent runtime with:
@@ -19,8 +21,28 @@ local agent runtime with:
 - permission modes,
 - and a bridge to cloud Devin.
 
-This README is written for people who just found the tool and want the newest
-practical patterns without hype.
+This README is the **practical foundation** — the official features, used well,
+that anyone can adopt in 10 minutes. The `docs/` folder goes deeper into the
+power-user layer that turns Devin into a daily driver.
+
+### What's in this guide
+
+| Doc | What it covers | Risk level |
+| --- | --- | --- |
+| **README** (this file) | Official features done right: rules, skills, subagents, MCP, hooks, modes, routing, prompts | ✅ Safe for everyone |
+| [docs/models.md](./docs/models.md) | The full model lineup, with reproducible setup for the **low-risk** ones (paid API keys + self-hosted) | ✅ Mostly safe |
+| [docs/swarms.md](./docs/swarms.md) | Getting the most out of Devin's built-in subagent orchestration: custom profiles + a disciplined fan-out workflow | ✅ Safe |
+| [docs/ops-runbook.md](./docs/ops-runbook.md) | Keeping a heavy multi-agent + local-model setup from freezing your machine | ✅ Safe |
+| [docs/byok-proxy.md](./docs/byok-proxy.md) | **Concepts** behind splicing your own models into the picker via a local proxy | ⚠️ Read the ToS warning |
+
+> [!IMPORTANT]
+> The deeper you go, the more caveats apply. Bringing **subscription** models
+> (Claude Max, ChatGPT/Codex, Cursor, Kimi, Grok) into Devin via OAuth almost
+> certainly violates those vendors' Terms of Service and can get accounts
+> banned. This guide documents the **safe lane** (pay-as-you-go API keys +
+> models you host yourself) in full, **names** the subscription lane as "what's
+> possible," and never ships a turn-key recipe for it. Start safe; understand
+> the risk before going further.
 
 ---
 
@@ -323,6 +345,17 @@ Now you can ask:
 ```text
 Use the fast-researcher subagent to map the auth flow.
 ```
+
+### Going further: fleets and profiles
+
+This is stock Devin's superpower — there's nothing extra to install. The parent
+session can summon **as many subagents as your machine can handle**, hold them
+all in flight, read each result as it lands, refill the freed slot, and keep
+driving the project autonomously instead of stopping to ask you every few
+seconds. Custom subagent profiles let you pin a specific model and tool policy to
+each role (scout / impl / test / review). The disciplined fan-out workflow, the
+profile patterns, and the mutex rules that keep parallel writers from corrupting
+each other are in **[docs/swarms.md](./docs/swarms.md)**.
 
 ---
 
@@ -657,6 +690,17 @@ Do not hard-code viral pricing claims in a public README. Promos change. Check
 the current model picker and billing UI before publishing exact discount/free
 model claims.
 
+### Beyond the stock picker: bring your own models
+
+The biggest unlock in this whole guide is that the picker doesn't have to stop
+at what the gateway ships. With a local proxy you can splice in **your own**
+models — pay-as-you-go API models (e.g. MiniMax-M3, MiMo v2.5 Pro), models you
+**host yourself** on a GPU (llama.cpp / vLLM / Ollama), and — at real ToS risk —
+your existing **subscription** seats. The full lineup, reproducible setup for the
+safe paths, and the routing payoff of a deep bench are in
+**[docs/models.md](./docs/models.md)**; the proxy concepts that make it work are
+in **[docs/byok-proxy.md](./docs/byok-proxy.md)**.
+
 ---
 
 ## 12. New commands and tiny quality-of-life wins
@@ -732,7 +776,7 @@ your-project/
 │   │   │   └── SKILL.md
 │   │   └── run-checks/
 │   │       └── SKILL.md
-│   └── agents/
+│   └── agents/                # project-scoped subagent profiles
 │       ├── fast-researcher/
 │       │   └── AGENT.md
 │       └── reviewer/
@@ -740,6 +784,17 @@ your-project/
 └── scripts/
     └── block-dangerous-command.py
 ```
+
+For profiles you want available in *every* repo (e.g. a matched
+`scout`/`impl`/`test`/`review` set per model family — see
+[docs/swarms.md](./docs/swarms.md)), use the **user scope** instead:
+
+```text
+~/.config/devin/agents/<name>/AGENT.md   # available everywhere
+```
+
+Secrets for BYOK models (API keys) belong in a gitignored or user-level env
+file, never in committed config — see [docs/models.md](./docs/models.md).
 
 Minimal shared config:
 
@@ -874,7 +929,31 @@ Before opening a PR:
 
 ---
 
-## 15. Anti-slop checklist
+## 15. Running it heavy without freezing your machine
+
+Once you're driving BYOK models, local GPU servers, and fleets of subagents on
+one box, stability becomes its own discipline. The failure mode that hurts most
+is a single runaway agent or model server ballooning until the OS OOM-killer
+takes the whole machine down.
+
+The short version:
+
+1. **Cap each agent session** in its own memory-limited cgroup scope so a
+   runaway kills itself, not the host.
+2. **Run the proxy/model servers as supervised services** with restart-rate
+   limits and a small watchdog.
+3. **Keep one `status` command** that shows RAM/swap/GPU/ports/OOM events.
+4. **Lazy-start GPU backends**, one large model at a time.
+5. **Write down each incident** as one line of symptom + fix, right next to your
+   config.
+
+The full playbook — cgroup caps, single-port ownership by cgroup (not PID),
+GPU-as-mutex with fail-closed defaults, and the WSL-as-sidecar gotchas — is in
+**[docs/ops-runbook.md](./docs/ops-runbook.md)**.
+
+---
+
+## 16. Anti-slop checklist
 
 Keep:
 
@@ -889,18 +968,30 @@ Cut:
 
 - fake token-per-second math,
 - unsupported pricing/promo claims,
-- model names that do not exist in docs,
+- invented stock model names (BYOK models are fine when clearly labeled as
+  your own additions, not gateway defaults),
 - "10x" language,
 - giant personality prompts,
 - MCP configs that commit secrets,
+- BYOK recipes that publish credentials or drive someone else's subscription,
 - examples that ask agents to "make it better."
 
 The viral version is not the loudest version. It is the guide people can copy in
-10 minutes and feel the power immediately.
+10 minutes and feel the power immediately — and then grow into the advanced
+[docs/](./docs/) when they want more.
 
 ---
 
 ## Sources
+
+### In this repo (deep dives)
+
+- [docs/models.md](./docs/models.md) — the full model lineup + safe-path setup
+- [docs/swarms.md](./docs/swarms.md) — built-in subagent orchestration + profiles
+- [docs/ops-runbook.md](./docs/ops-runbook.md) — stability for heavy local setups
+- [docs/byok-proxy.md](./docs/byok-proxy.md) — concepts behind model injection
+
+### Official docs
 
 - [Devin for Terminal quickstart](https://cli.devin.ai/docs)
 - [Stable changelog](https://cli.devin.ai/docs/changelog/stable)
